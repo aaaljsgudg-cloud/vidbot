@@ -1,1 +1,1 @@
-worker: python vidbot.py
+worker: python -u vidbot.py
