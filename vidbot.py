@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import yt_dlp
 import requests
 import zipfile
@@ -12,7 +13,7 @@ from telegram.ext import (
     CallbackQueryHandler, filters, ContextTypes
 )
 
-# إعداد السجلات لمراقبة ريلواي
+# إعداد السجلات
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -20,29 +21,32 @@ if not TOKEN:
     raise ValueError("❌ BOT_TOKEN missing")
 
 MAX_SIZE = 50 * 1024 * 1024
+DATA_FILE = "db.json"
 
-db = {
-    "users": {},
-    "downloads": 0
-}
+# تحميل البيانات إذا موجودة
+if os.path.exists(DATA_FILE):
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
+        db = json.load(f)
+else:
+    db = {"users": {}, "downloads": 0}
+
+def save_db():
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(db, f, ensure_ascii=False, indent=2)
 
 def get_lang(update: Update) -> str:
-    code = update.effective_user.language_code or ""
+    user = update.effective_user
+    code = user.language_code or ""
     if code.startswith("ar"): return "ar"
     if code.startswith("tr"): return "tr"
     return "en"
 
-# قاموس اللغات المحدث لضمان ظهور النصوص كاملة
 T = {
     "choose": {"ar": "🎯 اختر نوع التحميل:", "en": "🎯 Choose download type:", "tr": "🎯 İndirme türünü seçin:"},
-    "downloading": {"ar": "⏳ جاري التحميل...", "en": "⏳ Downloading...", "tr": "⏳ İndiriliyor..."},
-    "uploading": {"ar": "📤 الملف كبير، جاري الرفع...", "en": "📤 File too large, uploading...", "tr": "📤 Dosya büyük, yükleniyor..."},
-    "done": {"ar": "✅ تم التحميل!", "en": "✅ Downloaded!", "tr": "✅ İndirildi!"},
-    "invalid": {"ar": "❌ أرسل رابط صحيح أو ملف .txt/.zip", "en": "❌ Send a valid link or .txt/.zip file", "tr": "❌ Geçerli bir link أو .txt/.zip gönderin"},
-    "no_url": {"ar": "❌ أرسل الرابط مرة أخرى", "en": "❌ Please send the link again", "tr": "❌ Lütfen linki tekrar gönderin"},
-    "empty_history": {"ar": "📭 سجلك فارغ", "en": "📭 Your history is empty", "tr": "📭 Geçmişiniz boş"},
-    "analyzing": {"ar": "🔍 جاري تحليل الملف...", "en": "🔍 Analyzing file...", "tr": "🔍 Dosya analiz ediliyor..."},
-    "no_txt": {"ar": "❌ لم يتم العثور على ملف .txt في الـ ZIP", "en": "❌ No .txt file found in ZIP", "tr": "❌ ZIP içinde .txt dosyası bulunamadı"}
+    "downloading": {"ar": "⏳ جاري التحميل... انتظر قليلاً يا مدير", "en": "⏳ Downloading... please wait", "tr": "⏳ İndiriliyor... lütfen bekleyin"},
+    "uploading": {"ar": "📤 الملف كبير، جاري الرفع للسحاب...", "en": "📤 File too large, uploading...", "tr": "📤 Dosya büyük, yükleniyor..."},
+    "invalid": {"ar": "❌ أرسل رابط صحيح أو ملف .txt/.zip", "en": "❌ Send a valid link or .txt/.zip file", "tr": "❌ Geçerli bir link veya .txt/.zip gönderin"},
+    "analyzing": {"ar": "🔍 جاري تحليل ملف الواتساب...", "en": "🔍 Analyzing WhatsApp file...", "tr": "🔍 WhatsApp dosyası analiz ediliyor..."}
 }
 
 def t(key: str, lang: str) -> str:
@@ -51,17 +55,10 @@ def t(key: str, lang: str) -> str:
 def clean_filename(name: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', "", name)[:60]
 
-def upload_file(filepath: str) -> str:
-    try:
-        with open(filepath, 'rb') as f:
-            res = requests.post('https://0x0.st', files={'file': f}, timeout=60)
-        return res.text.strip()
-    except:
-        return "❌ Upload Error"
-
 def ensure_user(user_id: str):
     if user_id not in db["users"]:
         db["users"][user_id] = {"history": []}
+        save_db()
 
 def save_history(user_id: str, title: str):
     ensure_user(user_id)
@@ -69,145 +66,136 @@ def save_history(user_id: str, title: str):
     if len(db["users"][user_id]["history"]) > 50:
         db["users"][user_id]["history"].pop(0)
     db["downloads"] += 1
+    save_db()
 
 def analyze_chat(path: str, lang: str) -> str:
     total = 0
     users = {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line: continue
-                match = re.search(r'] (.+?):', line)
-                if match:
-                    name = match.group(1).strip()
-                    users[name] = users.get(name, 0) + 1
-                    total += 1
-                elif ":" in line:
-                    name = line.split(":")[0].strip()
-                    users[name] = users.get(name, 0) + 1
-                    total += 1
-    except Exception as e:
-        return f"Error: {e}"
+    for enc in ['utf-8', 'utf-16', 'cp1252', 'latin-1']:
+        try:
+            with open(path, "r", encoding=enc) as f:
+                lines = f.readlines()
+            break
+        except: continue
+    else: return "❌ Error reading file encoding"
 
-    if not users: return "❌ No messages"
+    for line in lines:
+        line = line.strip()
+        if not line: continue
+        match = re.search(r'] (.+?):', line) or (re.search(r'-(.+?):', line))
+        if match:
+            name = match.group(1).strip()
+            users[name] = users.get(name, 0) + 1
+            total += 1
+
+    if not users: return "❌ No messages found"
     top_user = max(users, key=users.get)
-    top_count = users[top_user]
     top5 = sorted(users.items(), key=lambda x: x[1], reverse=True)[:5]
     top5_text = "\n".join([f"  {i+1}. {n}: {c}" for i, (n, c) in enumerate(top5)])
 
-    return f"📊 *Analysis*\n\n📨 Total: `{total}`\n🏆 Top: *{top_user}*\n\n🔝 *Top 5:*\n{top5_text}"
+    if lang == "ar":
+        return f"📊 *تحليل الدردشة*\n\n📨 الإجمالي: `{total}`\n🏆 الأنشط: *{top_user}*\n\n🔝 *أعلى 5:*\n{top5_text}"
+    return f"📊 *Analysis*\n\n📨 Total: `{total}`\n🏆 Most Active: *{top_user}*\n\n🔝 *Top 5:*\n{top5_text}"
 
-# دالة start محسنة لضمان عرض النص الترحيبي الكامل
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = get_lang(update)
-    ensure_user(str(update.effective_user.id))
-    
-    messages = {
-        "ar": (
-            "👋 أهلاً بك في *AIO 10.0*\n\n"
-            "🤖 *وظائف البوت:*\n"
-            "1️⃣ *تحميل فيديوهات* (يوتيوب، تيك توك، إلخ)\n"
-            "2️⃣ *تحليل واتساب* (أرسل ملف .txt)\n\n"
-            "🚀 ابدأ الآن بإرسال رابط أو ملف!"
-        ),
-        "en": (
-            "👋 Welcome to *AIO 10.0*\n\n"
-            "1️⃣ *Download videos* (YT, TikTok, etc)\n"
-            "2️⃣ *Analyze WhatsApp* (Send .txt file)\n\n"
-            "🚀 Send a link or file to start!"
-        ),
-        "tr": (
-            "👋 *AIO 10.0*'a hoş geldiniz\n\n"
-            "1️⃣ *Video indir* (YT, TikTok, vb.)\n"
-            "2️⃣ *WhatsApp analizi* (.txt dosyası gönder)\n\n"
-            "🚀 Başlamak için bir link veya dosya gönderin!"
-        )
+    user_id = str(update.effective_user.id)
+    ensure_user(user_id)
+    msgs = {
+        "ar": "👋 أهلاً بك يا مدير علي في *AIO 10.0*\n\n🚀 أرسل رابط فيديو للتحميل أو ملف واتساب للتحليل!",
+        "en": "👋 Welcome to *AIO 10.0*\n\n🚀 Send a video link to download or a WhatsApp file to analyze!",
+        "tr": "👋 *AIO 10.0*'a hoş geldiniz\n\n🚀 İndirmek için bir video linki veya analiz için bir WhatsApp dosyası gönderin!"
     }
-    await update.message.reply_text(messages.get(lang, messages["en"]), parse_mode="Markdown")
-
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lang = get_lang(update)
-    msg = "📜 /start - /stats - /history"
-    await update.message.reply_text(msg)
+    await update.message.reply_text(msgs.get(lang, msgs["en"]), parse_mode="Markdown")
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = f"📈 Stats:\n👤 Users: {len(db['users'])}\n📥 Downloads: {db['downloads']}"
-    await update.message.reply_text(msg)
+    lang = get_lang(update)
+    total_users = len(db["users"])
+    total_downloads = db["downloads"]
+    if lang == "ar":
+        msg = f"📈 *إحصائيات AIO 10.0*\n\n👤 المستخدمين: `{total_users}`\n📥 التحميلات: `{total_downloads}`"
+    elif lang == "tr":
+        msg = f"📈 *AIO 10.0 İstatistikleri*\n\n👤 Kullanıcılar: `{total_users}`\n📥 İndirmeler: `{total_downloads}`"
+    else:
+        msg = f"📈 *AIO 10.0 Stats*\n\n👤 Users: `{total_users}`\n📥 Downloads: `{total_downloads}`"
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = get_lang(update)
     user_id = str(update.effective_user.id)
-    hist = db["users"].get(user_id, {}).get("history", [])
+    ensure_user(user_id)
+    hist = db["users"][user_id]["history"]
     if not hist:
-        await update.message.reply_text("📭 Empty")
+        await update.message.reply_text("📭 سجل التحميلات فارغ")
         return
-    await update.message.reply_text("\n".join(hist[-10:]))
+    last10 = hist[-10:][::-1]
+    lines = "\n".join([f"{i+1}. {title}" for i, title in enumerate(last10)])
+    await update.message.reply_text(f"📋 *آخر 10 تحميلات:*\n\n{lines}", parse_mode="Markdown")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = get_lang(update)
     text = update.message.text.strip()
     if text.startswith("http"):
         context.user_data["url"] = text
         keyboard = [[InlineKeyboardButton("🎬 Video", callback_data="video"), 
                      InlineKeyboardButton("🎵 Audio", callback_data="audio")]]
-        await update.message.reply_text("🎯 Choice:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.message.reply_text(t("choose", lang), reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        await update.message.reply_text("❌ Send link or file")
+        await update.message.reply_text(t("invalid", lang))
 
 async def do_download(url: str, choice: str, message, user_id: str, lang: str):
-    status = await message.reply_text("⏳ ...")
+    status = await message.reply_text(t("downloading", lang))
     filename = None
     try:
-        ydl_opts = {
-            "outtmpl": f"{tempfile.gettempdir()}/%(title)s.%(ext)s",
-            "quiet": True,
-            "format": "bestvideo+bestaudio/best" if choice == "video" else "bestaudio/best",
-        }
+        ydl_opts = {"outtmpl": f"{tempfile.gettempdir()}/%(title)s.%(ext)s", "quiet": True}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
             title = clean_filename(info.get("title", "file"))
 
-        if os.path.getsize(filename) <= MAX_SIZE:
-            with open(filename, "rb") as f:
-                if choice == "video": await message.reply_video(f, caption=title)
-                else: await message.reply_audio(f, caption=title)
-        else:
-            await message.reply_text(f"🔗 {upload_file(filename)}")
-        
+        with open(filename, "rb") as f:
+            if choice == "video": await message.reply_video(f, caption=title)
+            else: await message.reply_audio(f, caption=title)
+
         save_history(user_id, title)
         await status.delete()
     except Exception as e:
-        await message.reply_text(f"❌ {str(e)[:50]}")
+        await status.edit_text(f"❌ Error: {str(e)[:50]}")
     finally:
         if filename and os.path.exists(filename): os.remove(filename)
 
 async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    lang = get_lang(update)
     url = context.user_data.get("url")
-    if url:
-        await do_download(url, query.data, query.message, str(query.from_user.id), "en")
+    if not url: 
+        await query.message.reply_text("❌ لم يتم العثور على رابط")
+        return
+    context.user_data.pop("url", None)
+    await do_download(url, query.data, query.message, str(query.from_user.id), lang)
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = get_lang(update)
     doc = update.message.document
-    status = await update.message.reply_text("🔍 Analyzing...")
+    status = await update.message.reply_text(t("analyzing", lang))
     file = await doc.get_file()
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, doc.file_name)
         await file.download_to_drive(path)
-        await update.message.reply_text(analyze_chat(path, "ar"), parse_mode="Markdown")
+        await update.message.reply_text(analyze_chat(path, lang), parse_mode="Markdown")
         await status.delete()
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("history", history_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     app.add_handler(CallbackQueryHandler(handle_choice))
-    app.run_polling()
+    print("🚀 AIO 10.0 Running...")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
