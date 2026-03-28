@@ -6,7 +6,7 @@ import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import ApplicationBuilder, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-# تحديث yt-dlp تلقائياً عند تشغيل السيرفر
+# 1. تحديث yt-dlp تلقائياً لضمان فك تشفير الروابط الجديدة
 try:
     subprocess.run(["pip", "install", "-U", "yt_dlp"], check=True)
 except Exception as e:
@@ -15,18 +15,20 @@ except Exception as e:
 # إعداد السجلات
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-TOKEN = os.getenv("TOKEN")
+# --- التعديل الجوهري: ربط الكود بمتغير Railway الصحيح ---
+TOKEN = os.getenv("BOT_TOKEN") 
+
 user_links = {}
 
-# --- دالة الأنيميشن ---
+# --- دالة الأنيميشن لإعطاء لمسة احترافية ---
 async def loading_animation(message):
-    frames = ["⏳ جاري التحميل.", "⏳ جاري التحميل..", "⏳ جاري التحميل...", "🚀 جاري المعالجة..."]
+    frames = ["⏳ جاري المعالجة.", "⏳ جاري المعالجة..", "⏳ جاري المعالجة...", "🚀 الوحش عم يسحب البيانات..."]
     i = 0
     while True:
         try:
             await message.edit_text(frames[i % len(frames)])
             i += 1
-            await asyncio.sleep(1)
+            await asyncio.sleep(1.5)
         except:
             break
 
@@ -59,12 +61,11 @@ async def choose_quality(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await query.edit_message_text("اختر الجودة المطلوبة للفيديو:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# --- التحميل وفصل البيانات ---
+# --- المحرك الرئيسي للتحميل ---
 async def download_logic(update: Update, context: ContextTypes.DEFAULT_TYPE, manual_type=None, manual_quality=None):
     query = update.callback_query
     chat_id = query.message.chat_id
     
-    # تحديد النوع والجودة
     if manual_type:
         media_type, quality = manual_type, manual_quality
     else:
@@ -73,8 +74,8 @@ async def download_logic(update: Update, context: ContextTypes.DEFAULT_TYPE, man
 
     url = user_links.get(chat_id)
 
-    # إرسال رسالة تحميل متحركة
-    loading_msg = await query.edit_message_text("⏳ جاري التحميل...")
+    # تشغيل الأنيميشن
+    loading_msg = await query.edit_message_text("⏳ جاري البدء...")
     task = asyncio.create_task(loading_animation(loading_msg))
 
     ydl_opts = {
@@ -82,7 +83,6 @@ async def download_logic(update: Update, context: ContextTypes.DEFAULT_TYPE, man
         'no_warnings': True,
         'outtmpl': f'downloads/{chat_id}_%(id)s.%(ext)s',
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'retries': 3
     }
 
     if media_type == "audio":
@@ -95,9 +95,9 @@ async def download_logic(update: Update, context: ContextTypes.DEFAULT_TYPE, man
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             
-            # --- ميزة تيك توك الصور ---
+            # --- ميزة تيك توك: فصل الصور عن الأغنية ---
             if 'tiktok' in url and ('entries' in info or info.get('formats') is None or not info.get('url')):
-                await loading_msg.edit_text("📸 اكتشفت ألبوم صور تيك توك.. جاري المعالجة...")
+                await loading_msg.edit_text("📸 اكتشفت ألبوم صور تيك توك.. جاري الفصل...")
                 entries = info.get('entries', [info])
                 images = [item['url'] for item in entries if 'url' in item]
                 
@@ -107,14 +107,13 @@ async def download_logic(update: Update, context: ContextTypes.DEFAULT_TYPE, man
                 
                 audio_url = info.get('url') or (entries[0].get('url') if entries else None)
                 if audio_url:
-                    await context.bot.send_audio(chat_id, audio_url, caption="🎵 الأغنية الأصلية (تيك توك)")
+                    await context.bot.send_audio(chat_id, audio_url, caption="🎵 الأغنية الأصلية")
                 
                 task.cancel()
                 await loading_msg.delete()
                 return
 
-            # --- التحميل العادي ---
-            await loading_msg.edit_text("🚀 جاري التحميل من السيرفر...")
+            # --- التنزيل العادي ---
             info_full = ydl.extract_info(url, download=True)
             path = ydl.prepare_filename(info_full)
             
@@ -125,28 +124,26 @@ async def download_logic(update: Update, context: ContextTypes.DEFAULT_TYPE, man
             if os.path.exists(path):
                 with open(path, 'rb') as f:
                     if media_type == "audio":
-                        await context.bot.send_audio(chat_id, f, caption="تم تحميل الأغنية بنجاح ✅")
+                        await context.bot.send_audio(chat_id, f, caption="تم بنجاح ✅")
                     else:
-                        await context.bot.send_video(chat_id, f, caption="تم تحميل الفيديو بنجاح ✅")
+                        await context.bot.send_video(chat_id, f, caption="تم بنجاح ✅")
                 os.remove(path)
             else:
-                await query.message.reply_text("❌ لم يتم العثور على الملف بعد التحميل.")
+                await query.message.reply_text("❌ الملف غير موجود.")
 
     except Exception as e:
         task.cancel()
         try: await loading_msg.delete()
         except: pass
-        logging.error(f"Error: {e}")
-        await query.message.reply_text(f"❌ عذراً مانيجر، صار خطأ بالسيستم: {str(e)}")
+        await query.message.reply_text(f"❌ خطأ: {str(e)}")
 
-# --- تشغيل البوت ---
 if __name__ == '__main__':
     if not os.path.exists('downloads'): os.makedirs('downloads')
-    
+    # تأكد من استخدام التوكن الصحيح هنا
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(choose_quality, pattern="^type_"))
     app.add_handler(CallbackQueryHandler(download_logic, pattern="^down_"))
     
-    print("🚀 الوحش Monster+ شغال على Railway...")
+    print("🚀 الوحش Monster+ انطلق بنجاح!")
     app.run_polling()
