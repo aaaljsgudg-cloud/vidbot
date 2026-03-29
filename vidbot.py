@@ -1,364 +1,213 @@
 import os
-import yt_dlp
 import logging
-import subprocess
+import random
 import asyncio
-import glob
 import json
-from datetime import datetime
-from playwright.async_api import async_playwright
+from gtts import gTTS
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, MessageHandler, CallbackQueryHandler, CommandHandler, ContextTypes, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
-try:
-    subprocess.run(["pip", "install", "-U", "yt_dlp"], check=True)
-    subprocess.run(["playwright", "install", "chromium"], check=True)
-except Exception as e:
-    print(f"Update failed: {e}")
+logging.basicConfig(level=logging.INFO)
 
-logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
+# التوكن تجريبي
+TOKEN = "8382996504:AAHs7nzULae06ASGSKWK88e7meakc9yfdNU"
 
-TOKEN = os.getenv("BOT_TOKEN")
-user_links = {}
-user_lang = {}  # لحفظ لغة كل مستخدم
+# ملف لتخزين بيانات المستخدمين
+DATA_FILE = "user_stats.json"
 
-STATS_FILE = 'stats.json'
-
-def load_stats():
-    if os.path.exists(STATS_FILE):
-        with open(STATS_FILE, 'r') as f:
+def load_data():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r") as f:
             return json.load(f)
-    return {"users": [], "downloads": 0}
+    return {}
 
-def save_stats(stats):
-    with open(STATS_FILE, 'w') as f:
-        json.dump(stats, f)
+def save_data():
+    with open(DATA_FILE, "w") as f:
+        json.dump(USER_STATS, f)
 
-def add_user(user_id):
-    stats = load_stats()
-    if user_id not in stats["users"]:
-        stats["users"].append(user_id)
-    save_stats(stats)
+USER_STATS = load_data()
+mistakes = {}
 
-def add_download():
-    stats = load_stats()
-    stats["downloads"] += 1
-    save_stats(stats)
-
-# --- النصوص بالعربي والإنجليزي ---
-TEXTS = {
-    'ar': {
-        'welcome': "👋 أهلاً {name}!\n\n🐂 أنا *Mini Toros* - بوت التحميل الأقوى!\n\n📥 أرسل لي أي رابط من:\n▸ يوتيوب 🎬\n▸ انستغرام 📸\n▸ تيك توك 🎵\n▸ فيسبوك 👥\n▸ تويتر/X 🐦\n▸ وأكثر من 1000 موقع! 🌐\n\n⚡ اكتب /help للمساعدة",
-        'help': "📖 *كيف تستخدم البوت؟*\n\n1️⃣ أرسل رابط الفيديو\n2️⃣ اختر نوع التحميل\n3️⃣ اختر الجودة\n4️⃣ انتظر وبيوصلك الملف! ✅\n\n📌 *الأوامر:*\n/start - البداية\n/help - المساعدة\n/about - عن البوت\n/stats - الإحصائيات\n/lang - تغيير اللغة",
-        'about': "🐂 *Mini Toros Bot*\n\n📌 الإصدار: 2.0\n⚡ يدعم أكثر من 1000 موقع\n🌐 يفتح المواقع بـ Chrome الحقيقي\n🎵 يحول لـ MP3 بجودة عالية\n📹 يدعم جودة حتى 4K\n\n💪 صُنع بكل احترافية!",
-        'stats': "📊 *إحصائيات Mini Toros*\n\n👥 المستخدمون: {users}\n📥 التحميلات: {downloads}\n\n🕐 {time}",
-        'link_received': "🔗 *تم استلام الرابط!*\nاختر نوع التحميل:",
-        'choose_quality': "🎬 *اختر الجودة:*",
-        'downloading': "📥 *جاري التحميل...*\n{bar}",
-        'sending': "📤 *جاري الإرسال...*",
-        'chrome': "🌐 *جاري فتح الموقع بـ Chrome...*",
-        'success': "✅ *تم التحميل بنجاح!*\n🐂 Mini Toros Bot",
-        'error_protected': "❌ الموقع محمي ومش ممكن السحب منه.",
-        'error_failed': "❌ ما قدرت أحمل الفيديو.",
-        'error': "❌ خطأ: {e}",
-        'btn_video': "🎥 فيديو",
-        'btn_audio': "🎵 أغنية فقط",
-        'btn_best': "🔥 أفضل جودة (4K)",
-        'btn_1080': "📺 1080p",
-        'btn_720': "📱 720p",
-        'lang_changed': "✅ تم تغيير اللغة إلى العربية!",
-    },
-    'en': {
-        'welcome': "👋 Hello {name}!\n\n🐂 I'm *Mini Toros* - The Ultimate Download Bot!\n\n📥 Send me any link from:\n▸ YouTube 🎬\n▸ Instagram 📸\n▸ TikTok 🎵\n▸ Facebook 👥\n▸ Twitter/X 🐦\n▸ 1000+ websites! 🌐\n\n⚡ Type /help for help",
-        'help': "📖 *How to use the bot?*\n\n1️⃣ Send a video link\n2️⃣ Choose download type\n3️⃣ Choose quality\n4️⃣ Wait for your file! ✅\n\n📌 *Commands:*\n/start - Start\n/help - Help\n/about - About\n/stats - Statistics\n/lang - Change language",
-        'about': "🐂 *Mini Toros Bot*\n\n📌 Version: 2.0\n⚡ Supports 1000+ websites\n🌐 Opens sites with real Chrome\n🎵 Converts to high quality MP3\n📹 Supports up to 4K quality\n\n💪 Built with professionalism!",
-        'stats': "📊 *Mini Toros Statistics*\n\n👥 Users: {users}\n📥 Downloads: {downloads}\n\n🕐 {time}",
-        'link_received': "🔗 *Link received!*\nChoose download type:",
-        'choose_quality': "🎬 *Choose quality:*",
-        'downloading': "📥 *Downloading...*\n{bar}",
-        'sending': "📤 *Sending...*",
-        'chrome': "🌐 *Opening with Chrome...*",
-        'success': "✅ *Downloaded successfully!*\n🐂 Mini Toros Bot",
-        'error_protected': "❌ This site is protected and cannot be downloaded.",
-        'error_failed': "❌ Failed to download the video.",
-        'error': "❌ Error: {e}",
-        'btn_video': "🎥 Video",
-        'btn_audio': "🎵 Audio only",
-        'btn_best': "🔥 Best quality (4K)",
-        'btn_1080': "📺 1080p",
-        'btn_720': "📱 720p",
-        'lang_changed': "✅ Language changed to English!",
-    }
+# قاعدة بيانات الدروس
+LESSONS = {
+    "Beginner": [
+        {"title": "Present Simple", "explanation": "We use present simple for habits.", 
+         "example": "I play football every day.", "quiz": "He ___ football.", 
+         "options": ["play", "plays", "playing"], "answer": "plays"}
+    ],
+    "Intermediate": [
+        {"title": "Past Continuous", "explanation": "We use past continuous for actions in progress in the past.", 
+         "example": "I was reading when he called.", "quiz": "They ___ TV at 8pm.", 
+         "options": ["watch", "were watching", "watched"], "answer": "were watching"}
+    ],
+    "Advanced": [
+        {"title": "Conditional Sentences", "explanation": "If + Present Simple → Future Simple.", 
+         "example": "If it rains, I will stay home.", "quiz": "If he ___ hard, he will succeed.", 
+         "options": ["study", "studies", "studied"], "answer": "studies"},
+        {"title": "Passive Voice", "explanation": "Object + be + past participle.", 
+         "example": "The cake was eaten by John.", "quiz": "The book ___ by the teacher.", 
+         "options": ["was explained", "explained", "is explain"], "answer": "was explained"}
+    ],
+    "Expert": [
+        {"title": "Reported Speech", "explanation": "We change tense when reporting speech.", 
+         "example": "He said he was tired.", "quiz": "She said she ___ happy.", 
+         "options": ["is", "was", "were"], "answer": "was"},
+        {"title": "Mixed Conditionals", "explanation": "If + Past Perfect → Would + Present.", 
+         "example": "If I had studied, I would be successful.", "quiz": "If he had worked, he ___ rich.", 
+         "options": ["would be", "was", "is"], "answer": "would be"}
+    ],
+    "Master": [
+        {"title": "Causative Form", "explanation": "Have/Get something done.", 
+         "example": "I had my car washed.", "quiz": "He ___ his hair cut.", 
+         "options": ["had", "has", "having"], "answer": "had"}
+    ]
 }
 
-def t(chat_id, key, **kwargs):
-    lang = user_lang.get(chat_id, 'ar')
-    text = TEXTS[lang].get(key, '')
-    return text.format(**kwargs) if kwargs else text
+BADGES = {
+    100: "🥉 Bronze",
+    200: "🥈 Silver",
+    300: "🥇 Gold",
+    400: "👑 Master"
+}
 
-# --- /start ---
+# --- دالة النطق الصوتي ---
+async def send_voice_note(chat_id, text, context):
+    try:
+        tts = gTTS(text=text, lang='en', slow=False)
+        filename = f"voice_{chat_id}.mp3"
+        tts.save(filename)
+        with open(filename, 'rb') as audio:
+            await context.bot.send_voice(chat_id=chat_id, voice=audio, caption=f"🎧 Pronunciation: {text}")
+        os.remove(filename)
+    except Exception as e:
+        logging.error(f"TTS Error: {e}")
+
+# --- رسالة الترحيب /start ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
-    add_user(chat_id)
-    name = update.message.from_user.first_name
-
+    chat_id = update.effective_chat.id
+    USER_STATS.setdefault(chat_id, {"lessons_done": 0, "correct": 0, "wrong": 0, "xp": 0, "level": "Beginner", "badge": ""})
+    save_data()
+    text = "🎓 Welcome to English Academy!\n🚀 نظام جبار لتعلم الإنجليزية.\n\nاختر المستوى:"
     keyboard = [
-        [InlineKeyboardButton("🇸🇦 العربية", callback_data="lang_ar"),
-         InlineKeyboardButton("🇬🇧 English", callback_data="lang_en")]
+        [InlineKeyboardButton("🔰 Beginner", callback_data="level_Beginner")],
+        [InlineKeyboardButton("⚡ Intermediate", callback_data="level_Intermediate")],
+        [InlineKeyboardButton("🏆 Advanced", callback_data="level_Advanced")],
+        [InlineKeyboardButton("👑 Expert", callback_data="level_Expert")],
+        [InlineKeyboardButton("🌌 Master", callback_data="level_Master")],
+        [InlineKeyboardButton("📊 إحصائياتي", callback_data="stats")]
     ]
-    await update.message.reply_text(
-        t(chat_id, 'welcome', name=name),
-        parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+# --- اختيار درس ---
+async def choose_lesson(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    level = query.data.split("_")[1]
+    lesson = random.choice(LESSONS[level])
+    context.user_data['lesson'] = lesson
+    response = f"📘 Lesson: *{lesson['title']}*\n\n{lesson['explanation']}\n💡 Example: {lesson['example']}"
+    keyboard = [[InlineKeyboardButton("📝 Quiz", callback_data="quiz")]]
+    await query.edit_message_text(response, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+# --- اختبار ---
+async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    lesson = context.user_data['lesson']
+    keyboard = [[InlineKeyboardButton(opt, callback_data=f"ans_{opt}")] for opt in lesson['options']]
+    await query.edit_message_text(f"🎯 Quiz:\n{lesson['quiz']}", reply_markup=InlineKeyboardMarkup(keyboard))
+
+# --- معالجة الإجابة ---
+async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    chat_id = query.message.chat_id
+    user_answer = query.data.replace("ans_", "")
+    lesson = context.user_data['lesson']
+    if user_answer == lesson['answer']:
+        USER_STATS[chat_id]["correct"] += 1
+        USER_STATS[chat_id]["xp"] += 10
+        result = f"✅ Correct! +10 XP\n💡 Example: {lesson['example']}"
+    else:
+        USER_STATS[chat_id]["wrong"] += 1
+        result = f"❌ Wrong. Correct answer: {lesson['answer']}\n💡 Example: {lesson['example']}"
+        if chat_id not in mistakes:
+            mistakes[chat_id] = []
+        mistakes[chat_id].append((lesson['title'], lesson['answer']))
+
+    USER_STATS[chat_id]["lessons_done"] += 1
+
+    # ترقية المستوى حسب XP + Badges
+    xp = USER_STATS[chat_id]["xp"]
+    for threshold, badge in BADGES.items():
+        if xp >= threshold:
+            USER_STATS[chat_id]["badge"] = badge
+
+    if xp >= 100 and USER_STATS[chat_id]["level"] == "Beginner":
+        USER_STATS[chat_id]["level"] = "Intermediate"
+        result += "\n🎉 Congratulations! You are now Intermediate!"
+    elif xp >= 200 and USER_STATS[chat_id]["level"] == "Intermediate":
+        USER_STATS[chat_id]["level"] = "Advanced"
+        result += "\n🚀 Amazing! You are now Advanced!"
+    elif xp >= 400 and USER_STATS[chat_id]["level"] == "Advanced":
+        USER_STATS[chat_id]["level"] = "Expert"
+        result += "\n👑 Incredible! You are now Expert!"
+    elif xp >= 600 and USER_STATS[chat_id]["level"] == "Expert":
+        USER_STATS[chat_id]["level"] = "Master"
+        result += "\n🌌 Legendary! You are now Master!"
+
+    save_data()
+    keyboard = [[InlineKeyboardButton("🔰 Back to Levels", callback_data="back")]]
+    await query.edit_message_text(result, reply_markup=InlineKeyboardMarkup(keyboard))
+
+# --- إحصائيات ---
+async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    chat_id = query.message.chat_id
+    stats = USER_STATS.get(chat_id, {"lessons_done": 0, "correct": 0, "wrong": 0, "xp": 0, "level": "Beginner", "badge": ""})
+    response = (
+        f"📊 إحصائياتك:\n\n"
+        f"📘 دروس منجزة: {stats['lessons_done']}\n"
+        f"✅ صحيحة: {stats['correct']}\n"
+        f"❌ خاطئة: {stats['wrong']}\n"
+        f"⭐ XP: {stats['xp']}\n"
+        f"🏆 المستوى الحالي: {stats['level']}\n"
+        f"🎖 Badge: {stats['badge']}"
     )
+    await query.edit_message_text(response)
 
-# --- /help ---
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(t(update.message.chat_id, 'help'), parse_mode='Markdown')
-
-# --- /about ---
-async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(t(update.message.chat_id, 'about'), parse_mode='Markdown')
-
-# --- /stats ---
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    stats = load_stats()
-    await update.message.reply_text(
-        t(update.message.chat_id, 'stats',
-          users=len(stats['users']),
-          downloads=stats['downloads'],
-          time=datetime.now().strftime('%Y-%m-%d %H:%M')),
-        parse_mode='Markdown'
-    )
-
-# --- /lang ---
-async def lang_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("🇸🇦 العربية", callback_data="lang_ar"),
-         InlineKeyboardButton("🇬🇧 English", callback_data="lang_en")]
-    ]
-    await update.message.reply_text("🌐 Choose language / اختر اللغة:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-# --- Playwright ---
-async def extract_video_with_playwright(url):
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
-        )
-        context = await browser.new_context(
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        )
-        page = await context.new_page()
-        video_urls = []
-
-        async def handle_request(request):
-            req_url = request.url
-            if any(ext in req_url for ext in ['.mp4', '.m3u8', '.ts', '.webm', 'video', 'media', 'stream']):
-                if req_url not in video_urls:
-                    video_urls.append(req_url)
-
-        page.on("request", handle_request)
-        try:
-            await page.goto(url, wait_until='networkidle', timeout=30000)
-            await asyncio.sleep(3)
-        except:
-            pass
-        await browser.close()
-        return video_urls[0] if video_urls else None
-
-# --- استقبال الرسائل ---
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text
-    if not url.startswith("http"):
-        return
-
-    chat_id = update.message.chat_id
-    add_user(chat_id)
-    user_links[chat_id] = url
-
-    keyboard = [
-        [InlineKeyboardButton(t(chat_id, 'btn_video'), callback_data="type_video"),
-         InlineKeyboardButton(t(chat_id, 'btn_audio'), callback_data="type_audio")]
-    ]
-    await update.message.reply_text(
-        t(chat_id, 'link_received'),
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
-    )
-
-# --- شريط التقدم ---
-def make_progress_bar(percent):
-    filled = int(percent / 10)
-    bar = "█" * filled + "░" * (10 - filled)
-    return f"[{bar}] {percent:.0f}%"
+# --- العودة للمستويات ---
+async def back_to_levels(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await start(update, context)
 
 # --- callback handler ---
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    chat_id = query.message.chat_id
     data = query.data
 
-    # تغيير اللغة
-    if data.startswith("lang_"):
-        lang = data.split("_")[1]
-        user_lang[chat_id] = lang
-        await query.edit_message_text(t(chat_id, 'lang_changed'))
-        return
+    if data.startswith("level_"):
+        await choose_lesson(update, context)
+    elif data == "quiz":
+        await start_quiz(update, context)
+    elif data.startswith("ans_"):
+        await handle_answer(update, context)
+    elif data == "stats":
+        await show_stats(update, context)
+    elif data == "back":
+        await back_to_levels(update, context)
 
-    # اختيار النوع
-    if data.startswith("type_"):
-        choice = data.split("_")[1]
-        if choice == "audio":
-            await download_logic(update, context, "audio", "best")
-        else:
-            keyboard = [
-                [InlineKeyboardButton(t(chat_id, 'btn_best'), callback_data="down_video_best")],
-                [InlineKeyboardButton(t(chat_id, 'btn_1080'), callback_data="down_video_1080")],
-                [InlineKeyboardButton(t(chat_id, 'btn_720'), callback_data="down_video_720")]
-            ]
-            await query.edit_message_text(
-                t(chat_id, 'choose_quality'),
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode='Markdown'
-            )
-        return
+# --- استقبال الرسائل العادية ---
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    text = update.message.text
+    await send_voice_note(chat_id, text, context)
 
-    # تحميل
-    if data.startswith("down_"):
-        await download_logic(update, context)
-
-# --- المحرك الرئيسي ---
-async def download_logic(update: Update, context: ContextTypes.DEFAULT_TYPE, manual_type=None, manual_quality=None):
-    query = update.callback_query
-    chat_id = query.message.chat_id
-
-    if manual_type:
-        media_type, quality = manual_type, manual_quality
-    else:
-        parts = query.data.split("_")
-        media_type, quality = parts[1], parts[2]
-
-    url = user_links.get(chat_id)
-    loading_msg = await query.edit_message_text("⏳ ...")
-
-    cookie_file = 'cookies.txt.txt' if os.path.exists('cookies.txt.txt') else ('cookies.txt' if os.path.exists('cookies.txt') else None)
-
-    last_update = [0]
-    async def progress_hook(d):
-        if d['status'] == 'downloading':
-            try:
-                percent = float(d.get('_percent_str', '0%').strip().replace('%', ''))
-                if percent - last_update[0] >= 10:
-                    last_update[0] = percent
-                    bar = make_progress_bar(percent)
-                    await loading_msg.edit_text(t(chat_id, 'downloading', bar=bar), parse_mode='Markdown')
-            except:
-                pass
-
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'outtmpl': f'downloads/{chat_id}_%(id)s.%(ext)s',
-        'merge_output_format': 'mp4',
-        'cookiefile': cookie_file,
-        'progress_hooks': [lambda d: asyncio.create_task(progress_hook(d))],
-        'extractor_args': {'youtube': {'player_client': ['web', 'android']}},
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': url,
-        },
-        'nocheckcertificate': True,
-        'geo_bypass': True,
-    }
-
-    if media_type == "audio":
-        ydl_opts['format'] = 'bestaudio/best'
-        ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}]
-    else:
-        height = "1080" if quality == "1080" else ("720" if quality == "720" else "2160")
-        ydl_opts['format'] = f'bestvideo[height<={height}]+bestaudio/best'
-
-    success = False
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.extract_info(url, download=True)
-
-        files = glob.glob(f'downloads/{chat_id}_*')
-        path = files[0] if files else None
-
-        if path and os.path.exists(path):
-            success = True
-            add_download()
-            await loading_msg.edit_text(t(chat_id, 'sending'), parse_mode='Markdown')
-            with open(path, 'rb') as f:
-                caption = t(chat_id, 'success')
-                if media_type == "audio":
-                    await context.bot.send_audio(chat_id, f, caption=caption, parse_mode='Markdown')
-                else:
-                    await context.bot.send_video(chat_id, f, caption=caption, parse_mode='Markdown')
-            os.remove(path)
-            try: await loading_msg.delete()
-            except: pass
-
-    except Exception as e:
-        logging.warning(f"yt-dlp failed: {e}")
-
-    if not success:
-        try:
-            await loading_msg.edit_text(t(chat_id, 'chrome'), parse_mode='Markdown')
-            video_url = await extract_video_with_playwright(url)
-
-            if video_url:
-                ydl_opts_simple = {
-                    'quiet': True,
-                    'outtmpl': f'downloads/{chat_id}_pw.%(ext)s',
-                    'merge_output_format': 'mp4',
-                    'cookiefile': cookie_file,
-                }
-                with yt_dlp.YoutubeDL(ydl_opts_simple) as ydl:
-                    ydl.download([video_url])
-
-                files = glob.glob(f'downloads/{chat_id}_pw*')
-                path = files[0] if files else None
-
-                if path and os.path.exists(path):
-                    add_download()
-                    await loading_msg.edit_text(t(chat_id, 'sending'), parse_mode='Markdown')
-                    with open(path, 'rb') as f:
-                        caption = t(chat_id, 'success')
-                        if media_type == "audio":
-                            await context.bot.send_audio(chat_id, f, caption=caption, parse_mode='Markdown')
-                        else:
-                            await context.bot.send_video(chat_id, f, caption=caption, parse_mode='Markdown')
-                    os.remove(path)
-                    try: await loading_msg.delete()
-                    except: pass
-                else:
-                    await query.message.reply_text(t(chat_id, 'error_failed'))
-            else:
-                await query.message.reply_text(t(chat_id, 'error_protected'))
-
-        except Exception as e:
-            try: await loading_msg.delete()
-            except: pass
-            await query.message.reply_text(t(chat_id, 'error', e=str(e)))
-
+# --- تشغيل البوت ---
 if __name__ == '__main__':
-    if not os.path.exists('downloads'):
-        os.makedirs('downloads')
-
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("about", about_command))
-    app.add_handler(CommandHandler("stats", stats_command))
-    app.add_handler(CommandHandler("lang", lang_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("🐂 Mini Toros Bot انطلق بنجاح!")
+    print("🤖 English Academy Bot is running!")
     app.run_polling()
