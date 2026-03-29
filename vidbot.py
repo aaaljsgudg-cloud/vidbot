@@ -23,6 +23,9 @@ user_links = {}
 user_lang = {}  # لحفظ لغة كل مستخدم
 
 STATS_FILE = 'stats.json'
+print(f"Cookie file exists: {os.path.exists('cookies.txt.txt')}")
+print(f"Working directory: {os.getcwd()}")
+print(f"Files in dir: {os.listdir('.')}")
 
 def load_stats():
     if os.path.exists(STATS_FILE):
